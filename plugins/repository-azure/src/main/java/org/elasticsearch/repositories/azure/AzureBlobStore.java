@@ -88,8 +88,9 @@ public class AzureBlobStore implements BlobStore {
 
     private final Stats stats = new Stats();
 
-    private final Consumer<String> getMetricsCollector;
-    private final Consumer<String> listMetricsCollector;
+    private final Consumer<HttpURLConnection> getMetricsCollector;
+    private final Consumer<HttpURLConnection> listMetricsCollector;
+    private final Consumer<HttpURLConnection> uploadMetricsCollector;
 
     public AzureBlobStore(RepositoryMetadata metadata, AzureStorageService service, ThreadPool threadPool) {
         this.container = Repository.CONTAINER_SETTING.get(metadata.settings());
@@ -101,15 +102,35 @@ public class AzureBlobStore implements BlobStore {
         final Map<String, AzureStorageSettings> prevSettings = this.service.refreshAndClearCache(emptyMap());
         final Map<String, AzureStorageSettings> newSettings = AzureStorageSettings.overrideLocationMode(prevSettings, this.locationMode);
         this.service.refreshAndClearCache(newSettings);
-        this.getMetricsCollector = (requestMethod) -> {
-            if (requestMethod.equalsIgnoreCase("HEAD")) {
+        this.getMetricsCollector = (httpURLConnection) -> {
+            if (httpURLConnection.getRequestMethod().equals("HEAD")) {
                 stats.headOperations.incrementAndGet();
                 return;
             }
+            assert httpURLConnection.getRequestMethod().equals("GET");
 
             stats.getOperations.incrementAndGet();
         };
-        this.listMetricsCollector = (requestMethod) -> stats.listOperations.incrementAndGet();
+        this.listMetricsCollector = (httpURLConnection) -> {
+            assert httpURLConnection.getRequestMethod().equals("GET");
+            stats.listOperations.incrementAndGet();
+        };
+        this.uploadMetricsCollector = (httpURLConnection -> {
+           assert httpURLConnection.getRequestMethod().equals("PUT");
+            String queryParams = httpURLConnection.getURL().getQuery();
+            if (queryParams != null && isBlockUpload(queryParams)) {
+                stats.putBlockOperations.incrementAndGet();
+            } else {
+                stats.putOperations.incrementAndGet();
+            }
+        });
+    }
+
+    private boolean isBlockUpload(String queryParams) {
+        // https://docs.microsoft.com/en-us/rest/api/storageservices/put-block
+        // https://docs.microsoft.com/en-us/rest/api/storageservices/put-block-list
+        return (queryParams.contains("comp=block") && queryParams.contains("blockid="))
+            || queryParams.contains("comp=blocklist");
     }
 
     @Override
@@ -140,10 +161,11 @@ public class AzureBlobStore implements BlobStore {
     public boolean blobExists(String blob) throws URISyntaxException, StorageException {
         // Container name must be lower case.
         final Tuple<CloudBlobClient, Supplier<OperationContext>> client = client();
+        final OperationContext context = hookMetricCollector(client.v2().get(), getMetricsCollector);
         final CloudBlobContainer blobContainer = client.v1().getContainerReference(container);
         return SocketAccess.doPrivilegedException(() -> {
             final CloudBlockBlob azureBlob = blobContainer.getBlockBlobReference(blob);
-            return azureBlob.exists(null, null, client.v2().get());
+            return azureBlob.exists(null, null, context);
         });
     }
 
@@ -290,13 +312,14 @@ public class AzureBlobStore implements BlobStore {
             : "Should not be used with non-mark supporting streams as their retry handling in the SDK is broken";
         logger.trace(() -> new ParameterizedMessage("writeBlob({}, stream, {})", blobName, blobSize));
         final Tuple<CloudBlobClient, Supplier<OperationContext>> client = client();
+        final OperationContext operationContext = hookMetricCollector(client().v2().get(), uploadMetricsCollector);
         final CloudBlobContainer blobContainer = client.v1().getContainerReference(container);
         final CloudBlockBlob blob = blobContainer.getBlockBlobReference(blobName);
         try {
             final AccessCondition accessCondition =
                 failIfAlreadyExists ? AccessCondition.generateIfNotExistsCondition() : AccessCondition.generateEmptyCondition();
             SocketAccess.doPrivilegedVoidException(() ->
-                blob.upload(inputStream, blobSize, accessCondition, service.getBlobRequestOptionsForWriteBlob(), client.v2().get()));
+                blob.upload(inputStream, blobSize, accessCondition, service.getBlobRequestOptionsForWriteBlob(), operationContext));
         } catch (final StorageException se) {
             if (failIfAlreadyExists && se.getHttpStatusCode() == HttpURLConnection.HTTP_CONFLICT &&
                 StorageErrorCodeStrings.BLOB_ALREADY_EXISTS.equals(se.getErrorCode())) {
@@ -311,14 +334,13 @@ public class AzureBlobStore implements BlobStore {
         return service.client(clientName);
     }
 
-    private OperationContext hookMetricCollector(OperationContext context, Consumer<String> metricCollector) {
+    private OperationContext hookMetricCollector(OperationContext context, Consumer<HttpURLConnection> metricCollector) {
         context.getRequestCompletedEventHandler().addListener(new StorageEvent<>() {
             @Override
             public void eventOccurred(RequestCompletedEvent eventArg) {
                 int statusCode = eventArg.getRequestResult().getStatusCode();
-                HttpURLConnection httpURLConnection = (HttpURLConnection) eventArg.getConnectionObject();
                 if (statusCode < 300) {
-                    metricCollector.accept(httpURLConnection.getRequestMethod());
+                    metricCollector.accept((HttpURLConnection) eventArg.getConnectionObject());
                 }
             }
         });
@@ -357,10 +379,16 @@ public class AzureBlobStore implements BlobStore {
 
         private final AtomicLong headOperations = new AtomicLong();
 
+        private final AtomicLong putOperations = new AtomicLong();
+
+        private final AtomicLong putBlockOperations = new AtomicLong();
+
         private Map<String, Long> toMap() {
             return Map.of("GET", getOperations.get(),
                 "LIST", listOperations.get(),
-                "HEAD", headOperations.get());
+                "HEAD", headOperations.get(),
+                "PUT", putOperations.get(),
+                "PUT_BLOCK", putBlockOperations.get());
         }
     }
 }
