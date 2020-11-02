@@ -51,6 +51,7 @@ import org.elasticsearch.cluster.metadata.MetadataCreateIndexService;
 import org.elasticsearch.cluster.metadata.MetadataIndexStateService;
 import org.elasticsearch.cluster.metadata.MetadataIndexUpgradeService;
 import org.elasticsearch.cluster.metadata.RepositoriesMetadata;
+import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.routing.RecoverySource;
 import org.elasticsearch.cluster.routing.RecoverySource.SnapshotRecoverySource;
 import org.elasticsearch.cluster.routing.RoutingChangesObserver;
@@ -66,7 +67,6 @@ import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.common.regex.Regex;
 import org.elasticsearch.common.settings.ClusterSettings;
 import org.elasticsearch.common.settings.Settings;
-import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.index.Index;
 import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.index.shard.IndexShard;
@@ -131,7 +131,6 @@ public class RestoreService implements ClusterStateApplier {
             SETTING_VERSION_CREATED,
             SETTING_INDEX_UUID,
             SETTING_CREATION_DATE,
-            IndexSettings.INDEX_SOFT_DELETES_SETTING.getKey(),
             SETTING_HISTORY_UUID));
 
     // It's OK to change some settings, but we shouldn't allow simply removing them
@@ -160,7 +159,7 @@ public class RestoreService implements ClusterStateApplier {
 
     private final ClusterSettings clusterSettings;
 
-    private final CleanRestoreStateTaskExecutor cleanRestoreStateTaskExecutor;
+    private static final CleanRestoreStateTaskExecutor cleanRestoreStateTaskExecutor = new CleanRestoreStateTaskExecutor();
 
     public RestoreService(ClusterService clusterService, RepositoriesService repositoriesService,
                           AllocationService allocationService, MetadataCreateIndexService createIndexService,
@@ -171,9 +170,10 @@ public class RestoreService implements ClusterStateApplier {
         this.allocationService = allocationService;
         this.createIndexService = createIndexService;
         this.metadataIndexUpgradeService = metadataIndexUpgradeService;
-        clusterService.addStateApplier(this);
-        this.clusterSettings = clusterSettings;
-        this.cleanRestoreStateTaskExecutor = new CleanRestoreStateTaskExecutor();
+        if (DiscoveryNode.isMasterNode(clusterService.getSettings())) {
+            clusterService.addStateApplier(this);
+        }
+        this.clusterSettings = clusterService.getClusterSettings();
         this.shardLimitValidator = shardLimitValidator;
     }
 
@@ -262,7 +262,8 @@ public class RestoreService implements ClusterStateApplier {
 
                 // Now we can start the actual restore process by adding shards to be recovered in the cluster state
                 // and updating cluster metadata (global and index) as needed
-                clusterService.submitStateUpdateTask("restore_snapshot[" + snapshotName + ']', new ClusterStateUpdateTask() {
+                clusterService.submitStateUpdateTask(
+                        "restore_snapshot[" + snapshotName + ']', new ClusterStateUpdateTask(request.masterNodeTimeout()) {
                     final String restoreUUID = UUIDs.randomBase64UUID();
                     RestoreInfo restoreInfo = null;
 
@@ -524,6 +525,12 @@ public class RestoreService implements ClusterStateApplier {
                             .put(changeSettings)
                             .normalizePrefix(IndexMetadata.INDEX_SETTING_PREFIX)
                             .build();
+                        if (IndexSettings.INDEX_SOFT_DELETES_SETTING.get(indexMetadata.getSettings()) &&
+                            IndexSettings.INDEX_SOFT_DELETES_SETTING.exists(changeSettings) &&
+                            IndexSettings.INDEX_SOFT_DELETES_SETTING.get(changeSettings) == false) {
+                            throw new SnapshotRestoreException(snapshot,
+                                "cannot disable setting [" + IndexSettings.INDEX_SOFT_DELETES_SETTING.getKey() + "] on restore");
+                        }
                         IndexMetadata.Builder builder = IndexMetadata.builder(indexMetadata);
                         Settings settings = indexMetadata.getSettings();
                         Set<String> keyFilters = new HashSet<>();
@@ -575,11 +582,6 @@ public class RestoreService implements ClusterStateApplier {
                     }
 
                     @Override
-                    public TimeValue timeout() {
-                        return request.masterNodeTimeout();
-                    }
-
-                    @Override
                     public void clusterStateProcessed(String source, ClusterState oldState, ClusterState newState) {
                         listener.onResponse(new RestoreCompletionResponse(restoreUUID, snapshot, restoreInfo));
                     }
@@ -601,7 +603,8 @@ public class RestoreService implements ClusterStateApplier {
         List<Index> updatedIndices = dataStream.getIndices().stream()
             .map(i -> metadata.get(renameIndex(i.getName(), request, true)).getIndex())
             .collect(Collectors.toList());
-        return new DataStream(dataStreamName, dataStream.getTimeStampField(), updatedIndices, dataStream.getGeneration());
+        return new DataStream(dataStreamName, dataStream.getTimeStampField(), updatedIndices, dataStream.getGeneration(),
+            dataStream.getMetadata(), dataStream.isHidden());
     }
 
     public static RestoreInProgress updateRestoreStateWithDeletedIndices(RestoreInProgress oldRestore, Set<Index> deletedIndices) {
@@ -910,7 +913,7 @@ public class RestoreService implements ClusterStateApplier {
         }
     }
 
-    private static boolean failed(SnapshotInfo snapshot, String index) {
+    public static boolean failed(SnapshotInfo snapshot, String index) {
         for (SnapshotShardFailure failure : snapshot.shardFailures()) {
             if (index.equals(failure.index())) {
                 return true;

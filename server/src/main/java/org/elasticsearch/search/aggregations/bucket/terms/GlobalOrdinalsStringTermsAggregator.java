@@ -301,7 +301,7 @@ public class GlobalOrdinalsStringTermsAggregator extends AbstractStringTermsAggr
                 mapSegmentCountsToGlobalCounts(mapping);
             }
             final SortedSetDocValues segmentOrds = valuesSource.ordinalsValues(ctx);
-            segmentDocCounts = context.bigArrays().grow(segmentDocCounts, 1 + segmentOrds.getValueCount());
+            segmentDocCounts = bigArrays().grow(segmentDocCounts, 1 + segmentOrds.getValueCount());
             assert sub == LeafBucketCollector.NO_OP_COLLECTOR;
             final SortedDocValues singleValues = DocValues.unwrapSingleton(segmentOrds);
             mapping = valuesSource.globalOrdinalsMapping(ctx);
@@ -336,11 +336,12 @@ public class GlobalOrdinalsStringTermsAggregator extends AbstractStringTermsAggr
         }
 
         @Override
-        protected void doPostCollection() throws IOException {
+        public InternalAggregation[] buildAggregations(long[] owningBucketOrds) throws IOException {
             if (mapping != null) {
                 mapSegmentCountsToGlobalCounts(mapping);
                 mapping = null;
             }
+            return super.buildAggregations(owningBucketOrds);
         }
 
         @Override
@@ -474,7 +475,7 @@ public class GlobalOrdinalsStringTermsAggregator extends AbstractStringTermsAggr
         private final LongKeyedBucketOrds bucketOrds;
 
         private RemapGlobalOrds(CardinalityUpperBound cardinality) {
-            bucketOrds = LongKeyedBucketOrds.build(context.bigArrays(), cardinality);
+            bucketOrds = LongKeyedBucketOrds.build(bigArrays(), cardinality);
         }
 
         @Override
@@ -513,8 +514,21 @@ public class GlobalOrdinalsStringTermsAggregator extends AbstractStringTermsAggr
                     if (false == acceptedGlobalOrdinals.test(globalOrd)) {
                         continue;
                     }
-                    long bucketOrd = bucketOrds.find(owningBucketOrd, globalOrd);
-                    long docCount = bucketOrd < 0 ? 0 : bucketDocCount(bucketOrd);
+                    /*
+                     * Use `add` instead of `find` here to assign an ordinal
+                     * even if the global ord wasn't found so we can build
+                     * sub-aggregations without trouble even though we haven't
+                     * hit any documents for them. This is wasteful, but
+                     * settings minDocCount == 0 is wasteful in general.....
+                     */
+                    long bucketOrd = bucketOrds.add(owningBucketOrd, globalOrd);
+                    long docCount;
+                    if (bucketOrd < 0) {
+                        bucketOrd = -1 - bucketOrd;
+                        docCount = bucketDocCount(bucketOrd);
+                    } else {
+                        docCount = 0;
+                    }
                     consumer.accept(globalOrd, bucketOrd, docCount);
                 }
             } else {
@@ -765,14 +779,14 @@ public class GlobalOrdinalsStringTermsAggregator extends AbstractStringTermsAggr
         private final long supersetSize;
         private final SignificanceHeuristic significanceHeuristic;
 
-        private LongArray subsetSizes = context.bigArrays().newLongArray(1, true);
+        private LongArray subsetSizes = bigArrays().newLongArray(1, true);
 
         SignificantTermsResults(
             SignificanceLookup significanceLookup,
             SignificanceHeuristic significanceHeuristic,
             CardinalityUpperBound cardinality
         ) {
-            backgroundFrequencies = significanceLookup.bytesLookup(context.bigArrays(), cardinality);
+            backgroundFrequencies = significanceLookup.bytesLookup(bigArrays(), cardinality);
             supersetSize = significanceLookup.supersetSize();
             this.significanceHeuristic = significanceHeuristic;
         }
@@ -788,7 +802,7 @@ public class GlobalOrdinalsStringTermsAggregator extends AbstractStringTermsAggr
                 @Override
                 public void collect(int doc, long owningBucketOrd) throws IOException {
                     super.collect(doc, owningBucketOrd);
-                    subsetSizes = context.bigArrays().grow(subsetSizes, owningBucketOrd + 1);
+                    subsetSizes = bigArrays().grow(subsetSizes, owningBucketOrd + 1);
                     subsetSizes.increment(owningBucketOrd, 1);
                 }
             };

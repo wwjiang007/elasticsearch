@@ -46,6 +46,9 @@ import static org.elasticsearch.common.xcontent.XContentFactory.jsonBuilder;
 import static org.elasticsearch.test.ESTestCase.randomAlphaOfLengthBetween;
 import static org.elasticsearch.test.ESTestCase.randomBoolean;
 import static org.elasticsearch.test.rest.ESRestTestCase.ensureGreen;
+import static org.hamcrest.Matchers.anyOf;
+import static org.hamcrest.Matchers.equalTo;
+import static org.junit.Assert.assertThat;
 
 /**
  * This class provides the operational REST functions needed to control an ILM time series lifecycle.
@@ -104,6 +107,17 @@ public final class TimeSeriesRestDriver {
         logger.info(response.getStatusLine());
     }
 
+    public static void index(RestClient client, String index, String id, Object... fields) throws IOException {
+        XContentBuilder document = jsonBuilder().startObject();
+        for (int i = 0; i < fields.length; i += 2) {
+            document.field((String) fields[i], fields[i + 1]);
+        }
+        document.endObject();
+        final Request request = new Request("POST", "/" + index + "/_doc/" + id);
+        request.setJsonEntity(Strings.toString(document));
+        assertThat(client.performRequest(request).getStatusLine().getStatusCode(), anyOf(equalTo(200), equalTo(201)));
+    }
+
     public static void createNewSingletonPolicy(RestClient client, String policyName, String phaseName, LifecycleAction action)
         throws IOException {
         createNewSingletonPolicy(client, policyName, phaseName, action, TimeValue.ZERO);
@@ -159,15 +173,12 @@ public final class TimeSeriesRestDriver {
         warmActions.put(AllocateAction.NAME, new AllocateAction(1, singletonMap("_name", "javaRestTest-1,javaRestTest-2"), null, null));
         warmActions.put(ShrinkAction.NAME, new ShrinkAction(1));
         Map<String, LifecycleAction> coldActions = new HashMap<>();
-        coldActions.put(SetPriorityAction.NAME, new SetPriorityAction(25));
+        coldActions.put(SetPriorityAction.NAME, new SetPriorityAction(0));
         coldActions.put(AllocateAction.NAME, new AllocateAction(0, singletonMap("_name", "javaRestTest-3"), null, null));
-        Map<String, LifecycleAction> frozenActions = new HashMap<>();
-        frozenActions.put(SetPriorityAction.NAME, new SetPriorityAction(0));
         Map<String, Phase> phases = new HashMap<>();
         phases.put("hot", new Phase("hot", hotTime, hotActions));
         phases.put("warm", new Phase("warm", TimeValue.ZERO, warmActions));
         phases.put("cold", new Phase("cold", TimeValue.ZERO, coldActions));
-        phases.put("frozen", new Phase("frozen", TimeValue.ZERO, frozenActions));
         phases.put("delete", new Phase("delete", TimeValue.ZERO, singletonMap(DeleteAction.NAME, new DeleteAction())));
         LifecyclePolicy lifecyclePolicy = new LifecyclePolicy(policyName, phases);
         // PUT policy
@@ -231,10 +242,18 @@ public final class TimeSeriesRestDriver {
         ensureGreen(index);
     }
 
+    public static void createIndexWithSettings(RestClient client, String index, Settings.Builder settings) throws IOException {
+        Request request = new Request("PUT", "/" + index);
+        request.setJsonEntity("{\n \"settings\": " + Strings.toString(settings.build()) + "}");
+        client.performRequest(request);
+        // wait for the shards to initialize
+        ensureGreen(index);
+    }
+
     @SuppressWarnings("unchecked")
     public static Integer getNumberOfSegments(RestClient client, String index) throws IOException {
         Response response = client.performRequest(new Request("GET", index + "/_segments"));
-        XContentType entityContentType = XContentType.fromMediaTypeOrFormat(response.getEntity().getContentType().getValue());
+        XContentType entityContentType = XContentType.fromMediaType(response.getEntity().getContentType().getValue());
         Map<String, Object> responseEntity = XContentHelper.convertToMap(entityContentType.xContent(),
             response.getEntity().getContent(), false);
         responseEntity = (Map<String, Object>) responseEntity.get("indices");

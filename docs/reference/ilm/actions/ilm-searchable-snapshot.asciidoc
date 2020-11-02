@@ -2,7 +2,9 @@
 [[ilm-searchable-snapshot]]
 === Searchable snapshot
 
-Phases allowed: cold, frozen.
+beta::[]
+
+Phases allowed: cold.
 
 Takes a snapshot of the managed index in the configured repository
 and mounts it as a searchable snapshot.
@@ -31,7 +33,7 @@ Specifies where to store the snapshot.
 See <<snapshots-register-repository>> for more information.
 
 `force_merge_index`::
-(Optional, boolean)
+(Optional, Boolean)
 Force merges the managed index to one segment.
 Defaults to `true`.
 If the managed index was already force merged using the

@@ -38,7 +38,6 @@ import org.elasticsearch.index.IndexService;
 import org.elasticsearch.index.IndexSettings;
 import org.elasticsearch.index.cache.bitset.BitsetFilterCache;
 import org.elasticsearch.index.engine.Engine;
-import org.elasticsearch.index.fielddata.IndexFieldData;
 import org.elasticsearch.index.mapper.MappedFieldType;
 import org.elasticsearch.index.mapper.MapperService;
 import org.elasticsearch.index.mapper.ObjectMapper;
@@ -267,10 +266,10 @@ final class DefaultSearchContext extends SearchContext {
     @Override
     public Query buildFilteredQuery(Query query) {
         List<Query> filters = new ArrayList<>();
-
-        if (mapperService().hasNested()
-                && new NestedHelper(mapperService()).mightMatchNestedDocs(query)
-                && (aliasFilter == null || new NestedHelper(mapperService()).mightMatchNestedDocs(aliasFilter))) {
+        NestedHelper nestedHelper = new NestedHelper(queryShardContext::getObjectMapper, queryShardContext::isFieldMapped);
+        if (queryShardContext.hasNested()
+                && nestedHelper.mightMatchNestedDocs(query)
+                && (aliasFilter == null || nestedHelper.mightMatchNestedDocs(aliasFilter))) {
             filters.add(Queries.newNonNestedFilter());
         }
 
@@ -279,7 +278,7 @@ final class DefaultSearchContext extends SearchContext {
         }
 
         if (sliceBuilder != null) {
-            Query slicedQuery = sliceBuilder.toFilter(clusterService, request, queryShardContext);
+            Query slicedQuery = sliceBuilder.toFilter(clusterService, request, this.queryShardContext);
             if (slicedQuery instanceof MatchNoDocsQuery) {
                 return slicedQuery;
             } else {
@@ -485,11 +484,6 @@ final class DefaultSearchContext extends SearchContext {
     @Override
     public BitsetFilterCache bitsetFilterCache() {
         return indexService.cache().bitsetFilterCache();
-    }
-
-    @Override
-    public <IFD extends IndexFieldData<?>> IFD getForField(MappedFieldType fieldType) {
-        return queryShardContext.getForField(fieldType);
     }
 
     @Override
@@ -758,12 +752,12 @@ final class DefaultSearchContext extends SearchContext {
 
     @Override
     public MappedFieldType fieldType(String name) {
-        return mapperService().fieldType(name);
+        return queryShardContext.getFieldType(name);
     }
 
     @Override
     public ObjectMapper getObjectMapper(String name) {
-        return mapperService().getObjectMapper(name);
+        return queryShardContext.getObjectMapper(name);
     }
 
     @Override

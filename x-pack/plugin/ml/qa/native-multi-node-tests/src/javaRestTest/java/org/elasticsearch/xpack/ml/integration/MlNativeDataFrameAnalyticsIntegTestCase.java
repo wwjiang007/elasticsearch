@@ -93,7 +93,6 @@ abstract class MlNativeDataFrameAnalyticsIntegTestCase extends MlNativeIntegTest
         for (DataFrameAnalyticsConfig config : analytics) {
             try {
                 assertThat(deleteAnalytics(config.getId()).isAcknowledged(), is(true));
-                assertThat(searchStoredProgress(config.getId()).getHits().getTotalHits().value, equalTo(0L));
             } catch (Exception e) {
                 // just log and ignore
                 logger.error(new ParameterizedMessage("[{}] Could not clean up analytics job config", config.getId()), e);
@@ -356,8 +355,16 @@ abstract class MlNativeDataFrameAnalyticsIntegTestCase extends MlNativeIntegTest
         if (getFieldValue(mappings, "properties", "ml", "properties", "top_classes") != null) {
             assertThat(
                 mappings.toString(),
+                getFieldValue(mappings, "properties", "ml", "properties", "top_classes", "type"),
+                equalTo("nested"));
+            assertThat(
+                mappings.toString(),
                 getFieldValue(mappings, "properties", "ml", "properties", "top_classes", "properties", "class_name", "type"),
                 equalTo(expectedType));
+            assertThat(
+                mappings.toString(),
+                getFieldValue(mappings, "properties", "ml", "properties", "top_classes", "properties", "class_probability", "type"),
+                equalTo("double"));
         }
     }
 

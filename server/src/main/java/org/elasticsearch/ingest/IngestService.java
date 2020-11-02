@@ -70,7 +70,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -253,7 +252,7 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
 
             @Override
             protected AcknowledgedResponse newResponse(boolean acknowledged) {
-                return new AcknowledgedResponse(acknowledged);
+                return AcknowledgedResponse.of(acknowledged);
             }
 
             @Override
@@ -342,7 +341,7 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
 
                     @Override
                     protected AcknowledgedResponse newResponse(boolean acknowledged) {
-                        return new AcknowledgedResponse(acknowledged);
+                        return AcknowledgedResponse.of(acknowledged);
                     }
 
                     @Override
@@ -451,9 +450,10 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
                                    Iterable<DocWriteRequest<?>> actionRequests,
                                    BiConsumer<Integer, Exception> onFailure,
                                    BiConsumer<Thread, Exception> onCompletion,
-                                   IntConsumer onDropped) {
+                                   IntConsumer onDropped,
+                                   String executorName) {
 
-        threadPool.executor(ThreadPool.Names.WRITE).execute(new AbstractRunnable() {
+        threadPool.executor(executorName).execute(new AbstractRunnable() {
 
             @Override
             public void onFailure(Exception e) {
@@ -653,8 +653,8 @@ public class IngestService implements ClusterStateApplier, ReportingService<Inge
         Map<String, Object> sourceAsMap = indexRequest.sourceAsMap();
         IngestDocument ingestDocument = new IngestDocument(index, id, routing, version, versionType, sourceAsMap);
         ingestDocument.executePipeline(pipeline, (result, e) -> {
-            long ingestTimeInMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTimeInNanos);
-            totalMetrics.postIngest(ingestTimeInMillis);
+            long ingestTimeInNanos = System.nanoTime() - startTimeInNanos;
+            totalMetrics.postIngest(ingestTimeInNanos);
             if (e != null) {
                 totalMetrics.ingestFailed();
                 handler.accept(e);
