@@ -1,7 +1,8 @@
 /*
  * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
- * or more contributor license agreements. Licensed under the Elastic License;
- * you may not use this file except in compliance with the Elastic License.
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
  */
 
 package org.elasticsearch.indices.recovery;
@@ -15,6 +16,7 @@ import java.util.Set;
 
 public final class SearchableSnapshotRecoveryState extends RecoveryState {
     private boolean preWarmComplete;
+    private boolean remoteTranslogSet;
 
     public SearchableSnapshotRecoveryState(ShardRouting shardRouting, DiscoveryNode targetNode, @Nullable DiscoveryNode sourceNode) {
         super(shardRouting, targetNode, sourceNode, new Index());
@@ -23,7 +25,7 @@ public final class SearchableSnapshotRecoveryState extends RecoveryState {
     @Override
     public synchronized RecoveryState setStage(Stage stage) {
         // The transition to the final state was done by #prewarmCompleted, just ignore the transition
-        if (getStage() == Stage.DONE) {
+        if (getStage() == Stage.DONE || stage == Stage.FINALIZE && remoteTranslogSet) {
             return this;
         }
 
@@ -34,7 +36,40 @@ public final class SearchableSnapshotRecoveryState extends RecoveryState {
             return this;
         }
 
+        if (stage == Stage.INIT) {
+            remoteTranslogSet = false;
+        }
+
         return super.setStage(stage);
+    }
+
+    @Override
+    public synchronized RecoveryState setRemoteTranslogStage() {
+        remoteTranslogSet = true;
+        super.setStage(Stage.TRANSLOG);
+        return super.setStage(Stage.FINALIZE);
+    }
+
+    @Override
+    public synchronized void validateCurrentStage(Stage expected) {
+        if (remoteTranslogSet == false) {
+            super.validateCurrentStage(expected);
+        } else {
+            final Stage stage = getStage();
+            // For small indices it's possible that pre-warming finished shortly
+            // after transitioning to FINALIZE stage
+            if (stage != Stage.FINALIZE && stage != Stage.DONE) {
+                assert false : "expected stage [" + Stage.FINALIZE + " || " + Stage.DONE + "]; but current stage is [" + stage + "]";
+                throw new IllegalStateException(
+                    "expected stage [" + Stage.FINALIZE + " || " + Stage.DONE + "]; " + "but current stage is [" + stage + "]"
+                );
+            }
+        }
+    }
+
+    // Visible for tests
+    boolean isRemoteTranslogSet() {
+        return remoteTranslogSet;
     }
 
     public synchronized void setPreWarmComplete() {
@@ -58,6 +93,11 @@ public final class SearchableSnapshotRecoveryState extends RecoveryState {
     public synchronized void ignoreFile(String name) {
         SearchableSnapshotRecoveryState.Index index = (Index) getIndex();
         index.addFileToIgnore(name);
+    }
+
+    public synchronized void markIndexFileAsReused(String name) {
+        SearchableSnapshotRecoveryState.Index index = (Index) getIndex();
+        index.markFileAsReused(name);
     }
 
     private static final class Index extends RecoveryState.Index {
@@ -84,6 +124,10 @@ public final class SearchableSnapshotRecoveryState extends RecoveryState {
             }
 
             super.addFileDetail(name, length, reused);
+        }
+
+        private synchronized void markFileAsReused(String name) {
+            ((SearchableSnapshotRecoveryFilesDetails) fileDetails).markFileAsReused(name);
         }
 
         // We have to bypass all the calls to the timer
@@ -118,6 +162,12 @@ public final class SearchableSnapshotRecoveryState extends RecoveryState {
                 + "] and ["
                 + length
                 + "]";
+        }
+
+        void markFileAsReused(String name) {
+            final FileDetail fileDetail = fileDetails.get(name);
+            assert fileDetail != null;
+            fileDetails.put(name, new FileDetail(fileDetail.name(), fileDetail.length(), true));
         }
 
         @Override

@@ -1,7 +1,8 @@
 /*
  * Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
- * or more contributor license agreements. Licensed under the Elastic License;
- * you may not use this file except in compliance with the Elastic License.
+ * or more contributor license agreements. Licensed under the Elastic License
+ * 2.0; you may not use this file except in compliance with the Elastic License
+ * 2.0.
  */
 
 package org.elasticsearch.indices.recovery;
@@ -125,6 +126,19 @@ public class SearchableSnapshotsRecoveryStateTests extends ESTestCase {
         recoveryState.getIndex().addFileDetail("non_pre_warmed_file", 100, false);
 
         assertThat(recoveryState.getIndex().getFileDetails("non_pre_warmed_file"), is(nullValue()));
+    }
+
+    public void testResetAfterRemoteTranslogIsSetResetsFlag() {
+        SearchableSnapshotRecoveryState recoveryState = createRecoveryState();
+        recoveryState.getIndex().setFileDetailsComplete();
+
+        recoveryState.setStage(RecoveryState.Stage.INDEX).setStage(RecoveryState.Stage.VERIFY_INDEX).setRemoteTranslogStage();
+
+        assertThat(recoveryState.getStage(), equalTo(RecoveryState.Stage.FINALIZE));
+        assertThat(recoveryState.isRemoteTranslogSet(), equalTo(true));
+
+        recoveryState.setStage(RecoveryState.Stage.INIT);
+        assertThat(recoveryState.isRemoteTranslogSet(), equalTo(false));
     }
 
     private SearchableSnapshotRecoveryState createRecoveryState() {
