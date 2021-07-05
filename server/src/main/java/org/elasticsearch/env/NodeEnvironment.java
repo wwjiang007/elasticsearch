@@ -25,19 +25,19 @@ import org.elasticsearch.Version;
 import org.elasticsearch.cluster.metadata.IndexMetadata;
 import org.elasticsearch.cluster.node.DiscoveryNode;
 import org.elasticsearch.cluster.node.DiscoveryNodeRole;
-import org.elasticsearch.common.CheckedFunction;
-import org.elasticsearch.common.CheckedRunnable;
+import org.elasticsearch.core.CheckedFunction;
+import org.elasticsearch.core.CheckedRunnable;
 import org.elasticsearch.common.Randomness;
-import org.elasticsearch.common.SuppressForbidden;
+import org.elasticsearch.core.SuppressForbidden;
 import org.elasticsearch.common.UUIDs;
-import org.elasticsearch.common.collect.Tuple;
+import org.elasticsearch.core.Tuple;
 import org.elasticsearch.common.io.FileSystemUtils;
-import org.elasticsearch.common.lease.Releasable;
+import org.elasticsearch.core.Releasable;
 import org.elasticsearch.common.settings.Setting;
 import org.elasticsearch.common.settings.Setting.Property;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.unit.ByteSizeValue;
-import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.core.TimeValue;
 import org.elasticsearch.common.util.set.Sets;
 import org.elasticsearch.common.xcontent.NamedXContentRegistry;
 import org.elasticsearch.core.internal.io.IOUtils;
@@ -365,6 +365,13 @@ public final class NodeEnvironment  implements Closeable {
                 SNAPSHOT_CACHE_FOLDER
             ));
 
+            final Set<String> ignoredFileNames = new HashSet<>(Arrays.asList(
+                NODE_LOCK_FILENAME,
+                TEMP_FILE_NAME,
+                TEMP_FILE_NAME + ".tmp",
+                TEMP_FILE_NAME + ".final"
+            ));
+
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(legacyNodePath.path)) {
                 for (Path subFolderPath : stream) {
                     final String fileName = subFolderPath.getFileName().toString();
@@ -381,8 +388,7 @@ public final class NodeEnvironment  implements Closeable {
                                 targetSubFolderPath);
                         }
                         folderNames.add(fileName);
-                    } else if (fileName.equals(NODE_LOCK_FILENAME) == false &&
-                               fileName.equals(TEMP_FILE_NAME) == false) {
+                    } else if (ignoredFileNames.contains(fileName) == false) {
                         throw new IllegalStateException("unexpected file/folder encountered during data folder upgrade: " +
                             subFolderPath);
                     }
